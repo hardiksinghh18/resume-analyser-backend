@@ -6,7 +6,6 @@ const { encrypt, decrypt } = require('../utils/encryption');
 
 const enrichResume = async (req, res) => {
   const { url } = req.body;
-  console.log('URL from the body:', url);
 
   try {
     // Step 1: Download the PDF file from the URL
@@ -27,10 +26,10 @@ const enrichResume = async (req, res) => {
     console.log('Raw response from Gemini:', responseText);
 
     // Step 4: Clean the response (remove Markdown formatting)
-    let cleanedResponse = responseText;
-    if (cleanedResponse.startsWith('```json')) {
-      cleanedResponse = cleanedResponse.replace(/```json|```/g, '').trim();
-    }
+    let cleanedResponse = responseText
+      .replace(/```(json|JSON)?/g, '') // Remove all backticks and json labels
+      .replace(/^\s*JSON\s*$/gm, '') // Remove standalone "JSON" lines
+      .trim();
     console.log('Cleaned response:', cleanedResponse);
 
     // Step 5: Parse the cleaned response as JSON
@@ -38,9 +37,10 @@ const enrichResume = async (req, res) => {
     console.log('Structured data from Gemini:', jsonData);
 
     // Step 6: Encrypt sensitive data
+    let userEmail = Array.isArray(jsonData.email) ? jsonData.email[0] : jsonData.email;
     const encryptedData = {
       name: encrypt(jsonData.name),
-      email: encrypt(jsonData.email),
+      email: encrypt(userEmail),
       education: jsonData.education,
       experience: jsonData.experience,
       skills: jsonData.skills,
@@ -58,20 +58,44 @@ const enrichResume = async (req, res) => {
     res.status(500).json({ error: 'Failed to process the resume' });
   }
 };
+
 const searchResume = async (req, res) => {
   const { name } = req.body;
+  console.log(name);
 
   try {
     const applicants = await Applicant.find({});
-    const matches = applicants.filter((applicant) =>
-      decrypt(applicant.name).toLowerCase().includes(name.toLowerCase())
-    );
+
+    // Filter applicants whose decrypted name matches the search query
+    const matches = applicants.filter((applicant) => {
+      try {
+        const decryptedName = decrypt(applicant.name);
+        return decryptedName.toLowerCase().includes(name.toLowerCase());
+      } catch (err) {
+        console.error('Error decrypting applicant name:', err);
+        return false; // Skip this applicant if decryption fails
+      }
+    });
 
     if (matches.length === 0) {
       return res.status(404).json({ error: 'No matching records found' });
     }
 
-    res.status(200).json(matches);
+    // Decrypt the fields for the response
+    const decryptedMatches = matches.map((applicant) => {
+      try {
+        return {
+          ...applicant.toObject(),
+          name: decrypt(applicant.name),
+          email: decrypt(applicant.email),
+        };
+      } catch (err) {
+        console.error('Error decrypting applicant data:', err);
+        return null; // Skip this applicant if decryption fails
+      }
+    }).filter(Boolean); // Remove null entries
+
+    res.status(200).json(decryptedMatches);
   } catch (err) {
     console.error('Error searching resumes:', err);
     res.status(500).json({ error: 'Failed to search resumes' });
